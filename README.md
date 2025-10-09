@@ -43,10 +43,10 @@
 
 ```bash
 # 1. Клонируйте репозиторий
-git clone https://github.com/your-username/calculator-pro.git
+git clone https://github.com/your-username/Calculator.git
 
 # 2. Перейдите в папку проекта
-cd calculator-pro
+cd calculator
 
 # 3. Установите и запустите
 pip install PyQt5 && python main.py
