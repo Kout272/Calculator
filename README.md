@@ -55,7 +55,7 @@ pip install PyQt5 && python main.py
 
 ## 🖥️ Интерфейс:
 
-.................................
+<img width="341" height="493" alt="image" src="https://github.com/user-attachments/assets/d8b05eed-afa6-4846-acdd-73c2e4fc8e79" />
 
 ## 🎮 Использование:
 
@@ -70,4 +70,4 @@ pip install PyQt5 && python main.py
 
 ## 🔬 Научные Функции (по нажатию "≡"):
 
-.........................................
+<img width="334" height="490" alt="image" src="https://github.com/user-attachments/assets/9b9eb5ca-4668-4ee0-afac-48fb49a9c9e4" />
