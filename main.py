@@ -31,7 +31,7 @@ def setup_qt_plugins():
 setup_qt_plugins()
 
 from PyQt5.QtWidgets import QApplication
-from calculator_ui import ScientificCalculator
+from calculator_ui import MultiCalculator
 
 
 def main():
@@ -39,7 +39,7 @@ def main():
         app = QApplication(sys.argv)
         app.setStyle('Fusion')
 
-        calculator = ScientificCalculator()
+        calculator = MultiCalculator()
         calculator.show()
 
         return_code = app.exec_()
