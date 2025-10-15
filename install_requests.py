@@ -26,3 +26,6 @@ if __name__ == "__main__":
     else:
         print("\n💡 Попробуйте установить вручную:")
         print("pip install requests")
+
+
+

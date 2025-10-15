@@ -35,3 +35,6 @@
 1. Обновите pip: python -m pip install --upgrade pip
 2. Попробуйте: pip install --user requests
 3. Используйте встроенные курсы (калькулятор работает и без requests)
+
+
+

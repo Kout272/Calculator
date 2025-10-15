@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout,
                              QMessageBox, QStackedWidget, QSizePolicy, QTextEdit,
                              QTabWidget, QHBoxLayout, QLabel, QScrollArea, QInputDialog,
                              QComboBox, QGroupBox, QCheckBox, QListWidget, QListWidgetItem)
-from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QTimer
+from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QKeyEvent
 from PyQt5.QtMultimedia import QSoundEffect
 from PyQt5.QtCore import QUrl
@@ -15,7 +15,8 @@ try:
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
-    print("Библиотека requests не установлена. Используем встроенные курсы валют.")
+    import json
+    from datetime import datetime, timedelta
     # Встроенные курсы валют как fallback
     FALLBACK_RATES = {
         "USD": {"BYN": 3.2, "EUR": 0.85, "RUB": 95.0, "UAH": 36.5, "PLN": 4.0, "GBP": 0.79, "CHF": 0.88, "JPY": 150.0, "CNY": 7.2, "CAD": 1.35, "AUD": 1.52},
@@ -149,6 +150,7 @@ class AnimatedButton(QPushButton):
 
 
 class MultiCalculator(QMainWindow):
+    currency_update_done = pyqtSignal(bool, str)
     def __init__(self):
         super().__init__()
         self.current_input = ""
@@ -212,6 +214,13 @@ class MultiCalculator(QMainWindow):
         # Устанавливаем фокус на калькулятор для приема клавиатурного ввода
         self.setFocusPolicy(Qt.StrongFocus)
 
+        # Сигналы обновления валют и первичная асинхронная загрузка курсов
+        try:
+            self.currency_update_done.connect(self.on_currency_update_done)
+        except Exception:
+            pass
+        QTimer.singleShot(100, lambda: self.refresh_currency_rates(async_mode=True))
+
     def create_programmer_tab(self):
         """Создает вкладку режима программиста (скроллинг и разреженная компоновка)"""
         widget = QWidget()
@@ -222,6 +231,20 @@ class MultiCalculator(QMainWindow):
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
         main_layout.addWidget(scroll)
         content = QWidget(); scroll.setWidget(content)
+        # Темная тема для элементов вкладки Программист
+        content.setStyleSheet(
+            """
+            QWidget { background-color: #0f1420; color: #e2e8f0; }
+            QGroupBox { border: 1px solid #2d3748; border-radius: 8px; margin-top: 12px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 2px 4px; color: #cbd5e1; }
+            QLabel { color: #e2e8f0; }
+            QLineEdit { background-color: #1a2234; color: #ffffff; border: 1px solid #334155; border-radius: 6px; padding: 6px 8px; }
+            QLineEdit:focus { border: 1px solid #667eea; }
+            QComboBox { background-color: #1a2234; color: #ffffff; border: 1px solid #334155; border-radius: 6px; padding: 4px 6px; }
+            QComboBox QAbstractItemView { background-color: #1a2234; color: #e2e8f0; selection-background-color: #334155; }
+            QPushButton { color: #ffffff; }
+            """
+        )
         layout = QVBoxLayout(content)
         layout.setSpacing(16)
         layout.setContentsMargins(6, 6, 6, 12)
@@ -302,23 +325,7 @@ class MultiCalculator(QMainWindow):
         shift_layout.addWidget(left_btn, 1, 2); shift_layout.addWidget(right_btn, 1, 3)
         shift_layout.addWidget(QLabel("BIN"), 2, 0); shift_layout.addWidget(self.shift_bin, 2, 1, 1, 3)
 
-        # Цветовые модели
-        color_box = QGroupBox("Цветовые модели")
-        color_layout = QGridLayout(); color_box.setLayout(color_layout)
-        color_layout.setHorizontalSpacing(10); color_layout.setVerticalSpacing(8)
-        layout.addWidget(color_box)
-
-        self.color_hex = QLineEdit(); self.color_hex.setPlaceholderText("#RRGGBB")
-        color_btn = AnimatedButton("Преобразовать"); color_btn.clicked.connect(self.prog_color_convert)
-        color_btn.setStyleSheet(self.styles.get_function_style())
-        self.color_rgb = QLineEdit(); self.color_hsl = QLineEdit(); self.color_cmyk = QLineEdit()
-        for e in [self.color_rgb, self.color_hsl, self.color_cmyk]:
-            e.setReadOnly(True)
-        color_layout.addWidget(QLabel("HEX"), 0, 0); color_layout.addWidget(self.color_hex, 0, 1)
-        color_layout.addWidget(color_btn, 0, 2)
-        color_layout.addWidget(QLabel("RGB"), 1, 0); color_layout.addWidget(self.color_rgb, 1, 1, 1, 2)
-        color_layout.addWidget(QLabel("HSL"), 2, 0); color_layout.addWidget(self.color_hsl, 2, 1, 1, 2)
-        color_layout.addWidget(QLabel("CMYK"), 3, 0); color_layout.addWidget(self.color_cmyk, 3, 1, 1, 2)
+        # Цветовые модели — удалены по требованию
 
         # UNIX time и генератор
         misc_box = QGroupBox("UNIX-время и генератор паролей")
@@ -1447,94 +1454,122 @@ class MultiCalculator(QMainWindow):
 
     # Методы для финансовых расчетов
     def fetch_currency_rates(self):
-        """Получает курсы валют с API Беларусбанка"""
-        if not REQUESTS_AVAILABLE:
-            return False
-            
+        """Загружает курсы с API Беларусбанка: https://belarusbank.by/api/kursExchange
+        Строит кэш byn_per_unit для популярных кодов (USD, EUR, RUB, CNY, GBP, PLN, и т.д.)."""
         try:
-            # Проверяем, нужно ли обновлять курсы (обновляем раз в час)
-            if (self.last_currency_update and 
-                datetime.now() - self.last_currency_update < timedelta(hours=1) and 
+            if (self.last_currency_update and
+                datetime.now() - self.last_currency_update < timedelta(hours=1) and
                 self.currency_rates):
                 return True
-            
-            response = requests.get('https://belarusbank.by/api/kursExchange', timeout=10)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            # Очищаем старые курсы
-            self.currency_rates = {}
-            
-            # Обрабатываем данные API
-            for bank_data in data:
-                if 'kurs' in bank_data:
-                    for currency in bank_data['kurs']:
-                        curr_code = currency.get('cur_code')
-                        if curr_code:
-                            # Сохраняем курсы покупки и продажи
-                            self.currency_rates[curr_code] = {
-                                'buy': float(currency.get('cur_scale', 1)) / float(currency.get('cur_rate', 1)),
-                                'sell': float(currency.get('cur_scale', 1)) / float(currency.get('cur_rate', 1)),
-                                'scale': int(currency.get('cur_scale', 1))
-                            }
-            
+
+            url = 'https://belarusbank.by/api/kursExchange'
+            data = None
+            import time, re
+            for attempt in range(3):
+                try:
+                    if REQUESTS_AVAILABLE:
+                        resp = requests.get(url, timeout=12)
+                        resp.raise_for_status()
+                        data = resp.json()
+                    else:
+                        from urllib.request import urlopen, Request
+                        req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                        with urlopen(req, timeout=12) as r:
+                            data = json.loads(r.read().decode('utf-8', errors='ignore'))
+                    break
+                except Exception:
+                    if attempt < 2:
+                        time.sleep(0.7 * (attempt + 1))
+                        continue
+                    raise
+
+            # Парсим первую запись (как агрегированную). В некоторых ответах приходят массивы по отделениям
+            # Ищем поля вида XXX_in/XXX_out, где XXX — буквенный код валюты
+            rates = {}
+            pattern = re.compile(r'^([A-Z]{3})_(in|out)$')
+            def parse_entry(entry):
+                for key, val in entry.items():
+                    m = pattern.match(key)
+                    if not m:
+                        continue
+                    code = m.group(1).upper()
+                    try:
+                        v = float(str(val).replace(',', '.'))
+                    except Exception:
+                        continue
+                    if v <= 0:
+                        continue
+                    rec = rates.get(code, {'in': None, 'out': None})
+                    rec[m.group(2)] = v
+                    rates[code] = rec
+
+            if isinstance(data, list) and data:
+                # Сливаем несколько записей: берём первые валидные значения
+                for entry in data:
+                    if isinstance(entry, dict):
+                        parse_entry(entry)
+            elif isinstance(data, dict):
+                parse_entry(data)
+
+            byn_map = {}
+            for code, rec in rates.items():
+                # Берём среднее между покупкой/продажей, если обе есть; иначе что есть
+                vals = [v for v in [rec.get('in'), rec.get('out')] if isinstance(v, float)]
+                if not vals:
+                    continue
+                avg = sum(vals) / len(vals)
+                byn_map[code] = {'byn_per_unit': avg, 'scale': 1, 'official': avg}
+
+            byn_map['BYN'] = {'byn_per_unit': 1.0, 'scale': 1, 'official': 1.0}
+            self.currency_rates = byn_map
             self.last_currency_update = datetime.now()
             return True
-            
         except Exception as e:
-            print(f"Ошибка получения курсов валют: {e}")
+            print(f"Ошибка получения курсов валют (Belarusbank): {e}")
             return False
     
     def get_currency_rate(self, from_curr, to_curr):
-        """Получает курс конвертации между валютами"""
+        """Получает курс конвертации между валютами по точечному API NBRB /exrates/rates/{code}?parammode=2."""
+        from_curr = from_curr.upper(); to_curr = to_curr.upper()
         if from_curr == to_curr:
             return 1.0
-        
-        # Если requests недоступна, используем встроенные курсы
-        if not REQUESTS_AVAILABLE:
-            if from_curr in FALLBACK_RATES and to_curr in FALLBACK_RATES[from_curr]:
-                return FALLBACK_RATES[from_curr][to_curr]
-            elif to_curr in FALLBACK_RATES and from_curr in FALLBACK_RATES[to_curr]:
-                return 1.0 / FALLBACK_RATES[to_curr][from_curr]
-            else:
-                return None
-        
-        # Обновляем курсы если нужно
-        if not self.fetch_currency_rates():
-            # Если не удалось получить курсы с API, используем fallback
-            if from_curr in FALLBACK_RATES and to_curr in FALLBACK_RATES[from_curr]:
-                return FALLBACK_RATES[from_curr][to_curr]
-            elif to_curr in FALLBACK_RATES and from_curr in FALLBACK_RATES[to_curr]:
-                return 1.0 / FALLBACK_RATES[to_curr][from_curr]
-            return None
-        
-        # Если одна из валют BYN, используем прямые курсы
-        if from_curr == 'BYN' and to_curr in self.currency_rates:
-            return self.currency_rates[to_curr]['buy']
-        elif to_curr == 'BYN' and from_curr in self.currency_rates:
-            return 1.0 / self.currency_rates[from_curr]['sell']
-        
-        # Для конвертации между двумя не-BYN валютами через BYN
-        if from_curr in self.currency_rates and to_curr in self.currency_rates:
-            # Конвертируем from_curr -> BYN -> to_curr
-            from_to_byn = 1.0 / self.currency_rates[from_curr]['sell']
-            byn_to_to = self.currency_rates[to_curr]['buy']
-            return from_to_byn * byn_to_to
-        
-        return None
 
-    def refresh_currency_rates(self):
-        """Принудительно обновляет курсы валют"""
-        if not REQUESTS_AVAILABLE:
-            self.currency_info.setText("Используются встроенные курсы валют\n(для актуальных курсов установите requests)")
-            return
-            
+        # Убеждаемся, что кэш загружен (массово) и есть нужные коды
+        ok = self.fetch_currency_rates()
+        ok_from = ok and (from_curr in self.currency_rates)
+        ok_to = ok and (to_curr in self.currency_rates)
+        if not (ok_from and ok_to):
+            return None
+
+        byn_per_unit_from = self.currency_rates[from_curr]['byn_per_unit']
+        byn_per_unit_to = self.currency_rates[to_curr]['byn_per_unit']
+
+        # 1 from = byn_per_unit_from BYN; 1 Y = byn_per_unit_to BYN
+        # rate (from->to) = BYN per from / BYN per to
+        return byn_per_unit_from / byn_per_unit_to
+
+    def refresh_currency_rates(self, async_mode=False):
+        """Обновляет курсы валют. В async_mode выполняется в отдельном потоке, чтобы не блокировать UI."""
+        def worker():
+            ok = self.fetch_currency_rates()
+            msg = "Курсы валют успешно обновлены!" if ok else "Ошибка обновления курсов валют"
+            try:
+                self.currency_update_done.emit(ok, msg)
+            except Exception:
+                self.on_currency_update_done(ok, msg)
+
         self.currency_info.setText("Обновление курсов валют...")
-        if self.fetch_currency_rates():
-            self.currency_info.setText("Курсы валют успешно обновлены!")
+        if async_mode:
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
         else:
-            self.currency_info.setText("Ошибка обновления курсов валют")
+            worker()
+
+    def on_currency_update_done(self, ok, message):
+        try:
+            self.currency_info.setText(message)
+        except Exception:
+            pass
 
     def convert_currency(self):
         """Конвертирует валюту используя реальные курсы Беларусбанка"""
@@ -1579,12 +1614,11 @@ class MultiCalculator(QMainWindow):
             
             self.currency_result.setText(f"{amount} {from_curr} = {result_text} {to_curr}")
             
-            # Показываем информацию о курсе и времени обновления
-            if REQUESTS_AVAILABLE and self.last_currency_update:
-                update_time = self.last_currency_update.strftime("%H:%M:%S")
-                self.currency_info.setText(f"Курс: 1 {from_curr} = {rate:.6f} {to_curr}\nОбновлено: {update_time}")
-            else:
-                self.currency_info.setText(f"Курс: 1 {from_curr} = {rate:.6f} {to_curr}\n(встроенные курсы)")
+            # Показываем информацию о курсе и (при наличии) время обновления
+            info_text = f"Курс: 1 {from_curr} = {rate:.6f} {to_curr}"
+            if self.last_currency_update:
+                info_text += f"\nОбновлено: {self.last_currency_update.strftime('%H:%M:%S')}"
+            self.currency_info.setText(info_text)
             
         except ValueError:
             msg_box = QMessageBox(self)
